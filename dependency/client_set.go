@@ -12,6 +12,7 @@ import (
 	consulapi "github.com/hashicorp/consul/api"
 	rootcerts "github.com/hashicorp/go-rootcerts"
 	vaultapi "github.com/hashicorp/vault/api"
+	httptrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/net/http"
 )
 
 // ClientSet is a collection of clients that dependencies use to communicate
@@ -258,6 +259,7 @@ func (c *ClientSet) CreateVaultClient(i *CreateVaultClientInput) error {
 
 	// Setup the new transport
 	vaultConfig.HttpClient.Transport = transport
+	vaultConfig.HttpClient = httptrace.WrapClient(vaultConfig.HttpClient)
 
 	// Create the client
 	client, err := vaultapi.NewClient(vaultConfig)

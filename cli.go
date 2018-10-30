@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/consul-template/manager"
 	"github.com/hashicorp/consul-template/signals"
 	"github.com/hashicorp/consul-template/version"
+	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
 // Exit codes are int values that represent an exit code for a particular error.
@@ -62,6 +63,11 @@ func NewCLI(out, err io.Writer) *CLI {
 // Run accepts a slice of arguments and returns an int representing the exit
 // status from the command.
 func (cli *CLI) Run(args []string) int {
+	traceAgentURL := os.Getenv("TRACE_AGENT_URL")
+	if traceAgentURL != "" {
+		tracer.Start(tracer.WithServiceName("vault"), tracer.WithAgentAddr(traceAgentURL))
+		defer tracer.Stop()
+	}
 	// Parse the flags
 	config, paths, once, dry, isVersion, err := cli.ParseFlags(args[1:])
 	if err != nil {
