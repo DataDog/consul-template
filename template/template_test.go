@@ -10,9 +10,11 @@ import (
 	"time"
 
 	dep "github.com/hashicorp/consul-template/dependency"
+	"github.com/hashicorp/consul/api"
 )
 
 func TestNewTemplate(t *testing.T) {
+	t.Parallel()
 	f, err := ioutil.TempFile("", "")
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +124,7 @@ func TestNewTemplate(t *testing.T) {
 }
 
 func TestTemplate_Execute(t *testing.T) {
+	t.Parallel()
 	now = func() time.Time { return time.Unix(0, 0).UTC() }
 
 	f, err := ioutil.TempFile("", "")
@@ -453,6 +456,34 @@ func TestTemplate_Execute(t *testing.T) {
 				}(),
 			},
 			"zap",
+			false,
+		},
+		{
+			"func_secret_read_versions",
+			&NewTemplateInput{
+				Contents: `{{with secret "secret/foo"}}{{.Data.zip}}{{end}}:{{with secret "secret/foo?version=1"}}{{.Data.zip}}{{end}}`,
+			},
+			&ExecuteInput{
+				Brain: func() *Brain {
+					b := NewBrain()
+					d, err := dep.NewVaultReadQuery("secret/foo")
+					if err != nil {
+						t.Fatal(err)
+					}
+					b.Remember(d, &dep.Secret{
+						Data: map[string]interface{}{"zip": "zap"},
+					})
+					d1, err := dep.NewVaultReadQuery("secret/foo?version=1")
+					if err != nil {
+						t.Fatal(err)
+					}
+					b.Remember(d1, &dep.Secret{
+						Data: map[string]interface{}{"zip": "zed"},
+					})
+					return b
+				}(),
+			},
+			"zap:zed",
 			false,
 		},
 		{
@@ -1167,6 +1198,17 @@ func TestTemplate_Execute(t *testing.T) {
 			false,
 		},
 		{
+			"helper_explodemap",
+			&NewTemplateInput{
+				Contents: `{{ scratch.MapSet "explode-test" "foo/bar" "a"}}{{ scratch.MapSet "explode-test" "qux" "c"}}{{ scratch.MapSet "explode-test" "zip/zap" "d"}}{{ scratch.Get "explode-test" | explodeMap }}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"map[foo:map[bar:a] qux:c zip:map[zap:d]]",
+			false,
+		},
+		{
 			"helper_in",
 			&NewTemplateInput{
 				Contents: `{{ range service "webapp" }}{{ if "prod" | in .Tags }}{{ .Address }}{{ end }}{{ end }}`,
@@ -1250,6 +1292,52 @@ func TestTemplate_Execute(t *testing.T) {
 			false,
 		},
 		{
+			"helper_loop_start",
+			&NewTemplateInput{
+				Contents: `{{ range loop 1 3 }}1{{ end }}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"11",
+			false,
+		},
+		{
+			"helper_loop_text",
+			&NewTemplateInput{
+				Contents: `{{ range loop 1 "3" }}1{{ end }}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"11",
+			false,
+		},
+		{
+			"helper_loop_parseInt",
+			&NewTemplateInput{
+				Contents: `{{ $i := print "3" | parseInt }}{{ range loop 1 $i }}1{{ end }}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"11",
+			false,
+		},
+		{
+			// GH-1143
+			"helper_loop_var",
+			&NewTemplateInput{
+				Contents: `{{$n := 3 }}` +
+					`{{ range $i := loop $n }}{{ $i }}{{ end }}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"012",
+			false,
+		},
+		{
 			"helper_join",
 			&NewTemplateInput{
 				Contents: `{{ "a,b,c" | split "," | join ";" }}`,
@@ -1280,6 +1368,17 @@ func TestTemplate_Execute(t *testing.T) {
 				Brain: NewBrain(),
 			},
 			"1.2",
+			false,
+		},
+		{
+			"helper_parseFloat_format",
+			&NewTemplateInput{
+				Contents: `{{ "1.0" | parseFloat | printf "%.1f"}}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"1.0",
 			false,
 		},
 		{
@@ -1316,6 +1415,39 @@ func TestTemplate_Execute(t *testing.T) {
 			false,
 		},
 		{
+			"helper_parseYAML",
+			&NewTemplateInput{
+				Contents: `{{ "foo: bar" | parseYAML }}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"map[foo:bar]",
+			false,
+		},
+		{
+			"helper_parseYAMLv2",
+			&NewTemplateInput{
+				Contents: `{{ "foo: bar\nbaz: \"foo\"" | parseYAML }}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"map[baz:foo foo:bar]",
+			false,
+		},
+		{
+			"helper_parseYAMLnested",
+			&NewTemplateInput{
+				Contents: `{{ "foo:\n  bar: \"baz\"\n  baz: 7" | parseYAML }}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"map[foo:map[bar:baz baz:7]]",
+			false,
+		},
+		{
 			"helper_plugin",
 			&NewTemplateInput{
 				Contents: `{{ "1" | plugin "echo" }}`,
@@ -1325,6 +1457,18 @@ func TestTemplate_Execute(t *testing.T) {
 			},
 			"1",
 			false,
+		},
+		{
+			"helper_plugin_disabled",
+			&NewTemplateInput{
+				Contents:         `{{ "1" | plugin "echo" }}`,
+				FunctionDenylist: []string{"plugin"},
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"",
+			true,
 		},
 		{
 			"helper_regexMatch",
@@ -1470,6 +1614,17 @@ func TestTemplate_Execute(t *testing.T) {
 			false,
 		},
 		{
+			"helper_sockaddr",
+			&NewTemplateInput{
+				Contents: `{{ sockaddr "GetAllInterfaces | include \"flag\" \"loopback\" | include \"type\" \"IPv4\" | sort \"address\" | limit 1 | attr \"address\""}}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"127.0.0.1",
+			false,
+		},
+		{
 			"math_add",
 			&NewTemplateInput{
 				Contents: `{{ 2 | add 2 }}`,
@@ -1524,7 +1679,108 @@ func TestTemplate_Execute(t *testing.T) {
 			"1",
 			false,
 		},
+		{
+			"math_minimum",
+			&NewTemplateInput{
+				Contents: `{{ 3 | minimum 2 }}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"2",
+			false,
+		},
+		{
+			"math_maximum",
+			&NewTemplateInput{
+				Contents: `{{ 3 | maximum 2 }}`,
+			},
+			&ExecuteInput{
+				Brain: NewBrain(),
+			},
+			"3",
+			false,
+		},
+		{
+			"leaf_cert",
+			&NewTemplateInput{
+				Contents: `{{with caLeaf "foo"}}` +
+					`{{.CertPEM}}{{.PrivateKeyPEM}}{{end}}`,
+			},
+			&ExecuteInput{
+				Brain: func() *Brain {
+					d := dep.NewConnectLeafQuery("foo")
+					b := NewBrain()
+					b.Remember(d, &api.LeafCert{
+						Service:       "foo",
+						CertPEM:       "PEM",
+						PrivateKeyPEM: "KEY",
+					})
+					return b
+				}(),
+			},
+			"PEMKEY",
+			false,
+		},
+		{
+			"root_ca",
+			&NewTemplateInput{
+				Contents: `{{range caRoots}}{{.RootCertPEM}}{{end}}`,
+			},
+			&ExecuteInput{
+				Brain: func() *Brain {
+					d := dep.NewConnectCAQuery()
+					b := NewBrain()
+					b.Remember(d, []*api.CARoot{
+						&api.CARoot{
+							Name:        "Consul CA Root Cert",
+							RootCertPEM: "PEM",
+							Active:      true,
+						},
+					})
+					return b
+				}(),
+			},
+			"PEM",
+			false,
+		},
+		{
+			"func_connect",
+			&NewTemplateInput{
+				Contents: `{{ range connect "webapp" }}{{ .Address }}{{ end }}`,
+			},
+			&ExecuteInput{
+				Brain: func() *Brain {
+					b := NewBrain()
+					d, err := dep.NewHealthConnectQuery("webapp")
+					if err != nil {
+						t.Fatal(err)
+					}
+					b.Remember(d, []*dep.HealthService{
+						&dep.HealthService{
+							Node:    "node1",
+							Address: "1.2.3.4",
+						},
+						&dep.HealthService{
+							Node:    "node2",
+							Address: "5.6.7.8",
+						},
+					})
+					return b
+				}(),
+			},
+			"1.2.3.45.6.7.8",
+			false,
+		},
 	}
+
+	//	struct {
+	//		name string
+	//		ti   *NewTemplateInput
+	//		i    *ExecuteInput
+	//		e    string
+	//		err  bool
+	//	}
 
 	for i, tc := range cases {
 		t.Run(fmt.Sprintf("%d_%s", i, tc.name), func(t *testing.T) {

@@ -63,7 +63,7 @@ func NewCLI(out, err io.Writer) *CLI {
 // status from the command.
 func (cli *CLI) Run(args []string) int {
 	// Parse the flags
-	config, paths, once, dry, isVersion, err := cli.ParseFlags(args[1:])
+	config, paths, dry, isVersion, err := cli.ParseFlags(args[1:])
 	if err != nil {
 		if err == flag.ErrHelp {
 			fmt.Fprintf(cli.errStream, usage, version.Name)
@@ -98,12 +98,12 @@ func (cli *CLI) Run(args []string) int {
 	// print their version on stderr anyway.
 	if isVersion {
 		log.Printf("[DEBUG] (cli) version flag was given, exiting now")
-		fmt.Fprintf(cli.errStream, "%s\n", version.HumanVersion)
+		fmt.Fprintf(cli.outStream, "%s\n", version.HumanVersion)
 		return ExitCodeOK
 	}
 
 	// Initial runner
-	runner, err := manager.NewRunner(config, dry, once)
+	runner, err := manager.NewRunner(config, dry)
 	if err != nil {
 		return logError(err, ExitCodeRunnerError)
 	}
@@ -145,14 +145,14 @@ func (cli *CLI) Run(args []string) int {
 					return logError(err, ExitCodeConfigError)
 				}
 
-				runner, err = manager.NewRunner(config, dry, once)
+				runner, err = manager.NewRunner(config, dry)
 				if err != nil {
 					return logError(err, ExitCodeRunnerError)
 				}
 				go runner.Start()
 			case *config.KillSignal:
 				fmt.Fprintf(cli.errStream, "Cleaning up...\n")
-				runner.Stop()
+				runner.StopImmediately()
 				return ExitCodeInterrupt
 			case signals.SignalLookup["SIGCHLD"]:
 				// The SIGCHLD signal is sent to the parent of a child process when it
@@ -188,15 +188,17 @@ func (cli *CLI) stop() {
 // Flag library. This is extracted into a helper to keep the main function
 // small, but it also makes writing tests for parsing command line arguments
 // much easier and cleaner.
-func (cli *CLI) ParseFlags(args []string) (*config.Config, []string, bool, bool, bool, error) {
-	var dry, once, isVersion bool
+func (cli *CLI) ParseFlags(args []string) (
+	*config.Config, []string, bool, bool, error,
+) {
+	var dry, isVersion bool
 
 	c := config.DefaultConfig()
 
 	if s := os.Getenv("CT_LOCAL_CONFIG"); s != "" {
 		envConfig, err := config.Parse(s)
 		if err != nil {
-			return nil, nil, false, false, false, err
+			return nil, nil, false, false, err
 		}
 		c = c.Merge(envConfig)
 	}
@@ -318,6 +320,16 @@ func (cli *CLI) ParseFlags(args []string) (*config.Config, []string, bool, bool,
 		return nil
 	}), "dedup", "")
 
+	flags.Var((funcVar)(func(s string) error {
+		c.DefaultDelims.Left = config.String(s)
+		return nil
+	}), "default-left-delimiter", "")
+
+	flags.Var((funcVar)(func(s string) error {
+		c.DefaultDelims.Right = config.String(s)
+		return nil
+	}), "default-right-delimiter", "")
+
 	flags.BoolVar(&dry, "dry", false, "")
 
 	flags.Var((funcVar)(func(s string) error {
@@ -373,7 +385,10 @@ func (cli *CLI) ParseFlags(args []string) (*config.Config, []string, bool, bool,
 		return nil
 	}), "max-stale", "")
 
-	flags.BoolVar(&once, "once", false, "")
+	flags.Var((funcBoolVar)(func(b bool) error {
+		c.Once = *(config.Bool(b))
+		return nil
+	}), "once", "")
 
 	flags.Var((funcVar)(func(s string) error {
 		c.PidFile = config.String(s)
@@ -405,6 +420,11 @@ func (cli *CLI) ParseFlags(args []string) (*config.Config, []string, bool, bool,
 	}), "syslog-facility", "")
 
 	flags.Var((funcVar)(func(s string) error {
+		c.Syslog.Name = config.String(s)
+		return nil
+	}), "syslog-name", "")
+
+	flags.Var((funcVar)(func(s string) error {
 		t, err := config.ParseTemplateConfig(s)
 		if err != nil {
 			return err
@@ -417,11 +437,6 @@ func (cli *CLI) ParseFlags(args []string) (*config.Config, []string, bool, bool,
 		c.Vault.Address = config.String(s)
 		return nil
 	}), "vault-addr", "")
-
-	flags.Var((funcDurationVar)(func(t time.Duration) error {
-		c.Vault.Grace = config.TimeDuration(t)
-		return nil
-	}), "vault-grace", "")
 
 	flags.Var((funcBoolVar)(func(b bool) error {
 		c.Vault.RenewToken = config.Bool(b)
@@ -537,16 +552,16 @@ func (cli *CLI) ParseFlags(args []string) (*config.Config, []string, bool, bool,
 
 	// If there was a parser error, stop
 	if err := flags.Parse(args); err != nil {
-		return nil, nil, false, false, false, err
+		return nil, nil, false, false, err
 	}
 
 	// Error if extra arguments are present
 	args = flags.Args()
 	if len(args) > 0 {
-		return nil, nil, false, false, false, fmt.Errorf("cli: extra args: %q", args)
+		return nil, nil, false, false, fmt.Errorf("cli: extra args: %q", args)
 	}
 
-	return c, configPaths, once, dry, isVersion, nil
+	return c, configPaths, dry, isVersion, nil
 }
 
 // loadConfigs loads the configuration from the list of paths. The optional
@@ -578,10 +593,10 @@ func logError(err error, status int) int {
 
 func (cli *CLI) setup(conf *config.Config) (*config.Config, error) {
 	if err := logging.Setup(&logging.Config{
-		Name:           version.Name,
 		Level:          config.StringVal(conf.LogLevel),
 		Syslog:         config.BoolVal(conf.Syslog.Enabled),
 		SyslogFacility: config.StringVal(conf.Syslog.Facility),
+		SyslogName:     config.StringVal(conf.Syslog.Name),
 		Writer:         cli.errStream,
 	}); err != nil {
 		return nil, err
@@ -668,6 +683,12 @@ Options:
       Enable de-duplication mode - reduces load on Consul when many instances of
       Consul Template are rendering a common template
 
+  -default-left-delimiter
+      The default left delimiter for templating
+
+  -default-right-delimiter
+      The default right delimiter for templating
+
   -dry
       Print generated templates to stdout instead of rendering
 
@@ -699,7 +720,7 @@ Options:
       distribute work among all servers instead of just the leader
 
   -once
-      Do not run the process as a daemon
+      Do not run the process as a daemon. This disables wait/quiescence timers.
 
   -pid-file=<path>
       Path on disk to write the PID of the process
@@ -720,16 +741,15 @@ Options:
       Set the facility where syslog should log - if this attribute is supplied,
       the -syslog flag must also be supplied
 
+  -syslog-name=<name>
+      Set the name of the application which will appear in syslog, if this
+      attribute is supplied, the -syslog flag must also be supplied
+
   -template=<template>
        Adds a new template to watch on disk in the format 'in:out(:command)'
 
   -vault-addr=<address>
       Sets the address of the Vault server
-
-  -vault-grace=<duration>
-      Sets the grace period between lease renewal and secret re-acquisition - if
-      the remaining lease duration is less than this value, Consul Template will
-      acquire a new secret from Vault
 
   -vault-renew-token
       Periodically renew the provided Vault API token - this defaults to "true"

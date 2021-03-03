@@ -9,6 +9,8 @@ import (
 )
 
 func TestExecConfig_Copy(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		a    *ExecConfig
@@ -47,6 +49,8 @@ func TestExecConfig_Copy(t *testing.T) {
 }
 
 func TestExecConfig_Merge(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		a    *ExecConfig
@@ -282,6 +286,8 @@ func TestExecConfig_Merge(t *testing.T) {
 }
 
 func TestExecConfig_Finalize(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		i    *ExecConfig
@@ -294,10 +300,12 @@ func TestExecConfig_Finalize(t *testing.T) {
 				Command: String(""),
 				Enabled: Bool(false),
 				Env: &EnvConfig{
-					Blacklist: []string{},
-					Custom:    []string{},
-					Pristine:  Bool(false),
-					Whitelist: []string{},
+					Allowlist:           []string{},
+					AllowlistDeprecated: []string{},
+					Custom:              []string{},
+					Pristine:            Bool(false),
+					Denylist:            []string{},
+					DenylistDeprecated:  []string{},
 				},
 				KillSignal:   Signal(DefaultExecKillSignal),
 				KillTimeout:  TimeDuration(DefaultExecKillTimeout),
@@ -315,10 +323,12 @@ func TestExecConfig_Finalize(t *testing.T) {
 				Command: String("command"),
 				Enabled: Bool(true),
 				Env: &EnvConfig{
-					Blacklist: []string{},
-					Custom:    []string{},
-					Pristine:  Bool(false),
-					Whitelist: []string{},
+					Denylist:            []string{},
+					DenylistDeprecated:  []string{},
+					Custom:              []string{},
+					Pristine:            Bool(false),
+					Allowlist:           []string{},
+					AllowlistDeprecated: []string{},
 				},
 				KillSignal:   Signal(DefaultExecKillSignal),
 				KillTimeout:  TimeDuration(DefaultExecKillTimeout),

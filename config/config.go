@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,6 +33,9 @@ const (
 
 	// DefaultKillSignal is the default signal for termination.
 	DefaultKillSignal = syscall.SIGINT
+
+	// DefaultBlockQueryWaitTime is amount of time in seconds to do a blocking query for
+	DefaultBlockQueryWaitTime = 60 * time.Second
 )
 
 var (
@@ -46,6 +50,9 @@ type Config struct {
 
 	// Dedup is used to configure the dedup settings
 	Dedup *DedupConfig `mapstructure:"deduplicate"`
+
+	// DefaultDelims is used to configure the default delimiters for templates
+	DefaultDelims *DefaultDelims `mapstructure:"default_delimiters"`
 
 	// Exec is the configuration for exec/supervise mode.
 	Exec *ExecConfig `mapstructure:"exec"`
@@ -79,11 +86,21 @@ type Config struct {
 
 	// Wait is the quiescence timers.
 	Wait *WaitConfig `mapstructure:"wait"`
+
+	// Additional command line options
+	// Run once, executing each template exactly once, and exit
+	Once bool
+
+	// BlockQueryWaitTime is amount of time in seconds to do a blocking query for
+	BlockQueryWaitTime *time.Duration `mapstructure:"block_query_wait"`
 }
 
 // Copy returns a deep copy of the current configuration. This is useful because
 // the nested data structures may be shared.
 func (c *Config) Copy() *Config {
+	if c == nil {
+		return nil
+	}
 	var o Config
 
 	o.Consul = c.Consul
@@ -94,6 +111,10 @@ func (c *Config) Copy() *Config {
 
 	if c.Dedup != nil {
 		o.Dedup = c.Dedup.Copy()
+	}
+
+	if c.DefaultDelims != nil {
+		o.DefaultDelims = c.DefaultDelims.Copy()
 	}
 
 	if c.Exec != nil {
@@ -126,6 +147,10 @@ func (c *Config) Copy() *Config {
 		o.Wait = c.Wait.Copy()
 	}
 
+	o.Once = c.Once
+
+	o.BlockQueryWaitTime = c.BlockQueryWaitTime
+
 	return &o
 }
 
@@ -151,6 +176,10 @@ func (c *Config) Merge(o *Config) *Config {
 
 	if o.Dedup != nil {
 		r.Dedup = r.Dedup.Merge(o.Dedup)
+	}
+
+	if o.DefaultDelims != nil {
+		r.DefaultDelims = r.DefaultDelims.Merge(o.DefaultDelims)
 	}
 
 	if o.Exec != nil {
@@ -193,6 +222,12 @@ func (c *Config) Merge(o *Config) *Config {
 		r.Wait = r.Wait.Merge(o.Wait)
 	}
 
+	if o.BlockQueryWaitTime != nil {
+		r.BlockQueryWaitTime = o.BlockQueryWaitTime
+	}
+
+	r.Once = o.Once
+
 	return r
 }
 
@@ -217,6 +252,7 @@ func Parse(s string) (*Config, error) {
 		"consul.ssl",
 		"consul.transport",
 		"deduplicate",
+		"default_delimiters",
 		"env",
 		"exec",
 		"exec.env",
@@ -371,6 +407,7 @@ func (c *Config) GoString() string {
 	return fmt.Sprintf("&Config{"+
 		"Consul:%#v, "+
 		"Dedup:%#v, "+
+		"DefaultDelims:%#v, "+
 		"Exec:%#v, "+
 		"KillSignal:%s, "+
 		"LogLevel:%s, "+
@@ -380,10 +417,13 @@ func (c *Config) GoString() string {
 		"Syslog:%#v, "+
 		"Templates:%#v, "+
 		"Vault:%#v, "+
-		"Wait:%#v"+
+		"Wait:%#v, "+
+		"Once:%#v, "+
+		"BlockQueryWaitTime:%#v"+
 		"}",
 		c.Consul,
 		c.Dedup,
+		c.DefaultDelims,
 		c.Exec,
 		SignalGoString(c.KillSignal),
 		StringGoString(c.LogLevel),
@@ -394,20 +434,50 @@ func (c *Config) GoString() string {
 		c.Templates,
 		c.Vault,
 		c.Wait,
+		c.Once,
+		TimeDurationGoString(c.BlockQueryWaitTime),
 	)
+}
+
+// Show diff between 2 Configs, useful in tests
+func (expected *Config) Diff(actual *Config) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n")
+	ve := reflect.ValueOf(*expected)
+	va := reflect.ValueOf(*actual)
+	ct := ve.Type()
+
+	for i := 0; i < ve.NumField(); i++ {
+		fc := ve.Field(i)
+		fo := va.Field(i)
+		if !reflect.DeepEqual(fc.Interface(), fo.Interface()) {
+			fmt.Fprintf(&b, "%s:\n", ct.Field(i).Name)
+			fi := fc.Interface()
+			if _, ok := fi.(fmt.GoStringer); ok {
+				fmt.Fprintf(&b, "\texp: %#v\n", fc.Interface())
+				fmt.Fprintf(&b, "\tact: %#v\n", fo.Interface())
+			} else {
+				fmt.Fprintf(&b, "\texp: %+v\n", fc.Interface())
+				fmt.Fprintf(&b, "\tact: %+v\n", fo.Interface())
+			}
+		}
+	}
+
+	return b.String()
 }
 
 // DefaultConfig returns the default configuration struct. Certain environment
 // variables may be set which control the values for the default configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		Consul:    DefaultConsulConfig(),
-		Dedup:     DefaultDedupConfig(),
-		Exec:      DefaultExecConfig(),
-		Syslog:    DefaultSyslogConfig(),
-		Templates: DefaultTemplateConfigs(),
-		Vault:     DefaultVaultConfig(),
-		Wait:      DefaultWaitConfig(),
+		Consul:        DefaultConsulConfig(),
+		Dedup:         DefaultDedupConfig(),
+		DefaultDelims: DefaultDefaultDelims(),
+		Exec:          DefaultExecConfig(),
+		Syslog:        DefaultSyslogConfig(),
+		Templates:     DefaultTemplateConfigs(),
+		Vault:         DefaultVaultConfig(),
+		Wait:          DefaultWaitConfig(),
 	}
 }
 
@@ -417,6 +487,9 @@ func DefaultConfig() *Config {
 // data was given, but the user did not explicitly add "Enabled: true" to the
 // configuration.
 func (c *Config) Finalize() {
+	if c == nil {
+		return
+	}
 	if c.Consul == nil {
 		c.Consul = DefaultConsulConfig()
 	}
@@ -426,6 +499,10 @@ func (c *Config) Finalize() {
 		c.Dedup = DefaultDedupConfig()
 	}
 	c.Dedup.Finalize()
+
+	if c.DefaultDelims == nil {
+		c.DefaultDelims = DefaultDefaultDelims()
+	}
 
 	if c.Exec == nil {
 		c.Exec = DefaultExecConfig()
@@ -474,6 +551,16 @@ func (c *Config) Finalize() {
 		c.Wait = DefaultWaitConfig()
 	}
 	c.Wait.Finalize()
+
+	// disable Wait if -once was specified
+	if c.Once {
+		c.Wait = &WaitConfig{Enabled: Bool(false)}
+	}
+
+	// defaults WaitTime to 60 seconds
+	if c.BlockQueryWaitTime == nil {
+		c.BlockQueryWaitTime = TimeDuration(DefaultBlockQueryWaitTime)
+	}
 }
 
 func stringFromEnv(list []string, def string) *string {

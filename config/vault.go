@@ -8,10 +8,9 @@ import (
 )
 
 const (
-	// DefaultVaultGrace is the default grace period before which to read a new
-	// secret from Vault. If a lease is due to expire in 15 seconds, Consul
-	// Template will read a new secret at that time minus this value.
-	DefaultVaultGrace = 15 * time.Second
+	// XXX Change use to api.EnvVaultSkipVerify once we've updated vendored
+	// vault to version 1.1.0 or newer.
+	EnvVaultSkipVerify = "VAULT_SKIP_VERIFY"
 
 	// DefaultVaultRenewToken is the default value for if the Vault token should
 	// be renewed.
@@ -37,10 +36,6 @@ type VaultConfig struct {
 
 	// Enabled controls whether the Vault integration is active.
 	Enabled *bool `mapstructure:"enabled"`
-
-	// Grace is the amount of time before a lease is about to expire to force a
-	// new secret to be read.
-	Grace *time.Duration `mapstructure:"grace"`
 
 	// Namespace is the Vault namespace to use for reading/writing secrets. This can
 	// also be set via the VAULT_NAMESPACE environment variable.
@@ -100,8 +95,6 @@ func (c *VaultConfig) Copy() *VaultConfig {
 
 	o.Enabled = c.Enabled
 
-	o.Grace = c.Grace
-
 	o.Namespace = c.Namespace
 
 	o.RenewToken = c.RenewToken
@@ -153,10 +146,6 @@ func (c *VaultConfig) Merge(o *VaultConfig) *VaultConfig {
 		r.Enabled = o.Enabled
 	}
 
-	if o.Grace != nil {
-		r.Grace = o.Grace
-	}
-
 	if o.Namespace != nil {
 		r.Namespace = o.Namespace
 	}
@@ -200,18 +189,8 @@ func (c *VaultConfig) Finalize() {
 		}, "")
 	}
 
-	if c.Grace == nil {
-		c.Grace = TimeDuration(DefaultVaultGrace)
-	}
-
 	if c.Namespace == nil {
 		c.Namespace = stringFromEnv([]string{"VAULT_NAMESPACE"}, "")
-	}
-
-	if c.RenewToken == nil {
-		c.RenewToken = boolFromEnv([]string{
-			"VAULT_RENEW_TOKEN",
-		}, DefaultVaultRenewToken)
 	}
 
 	if c.Retry == nil {
@@ -242,7 +221,8 @@ func (c *VaultConfig) Finalize() {
 		c.SSL.ServerName = stringFromEnv([]string{api.EnvVaultTLSServerName}, "")
 	}
 	if c.SSL.Verify == nil {
-		c.SSL.Verify = antiboolFromEnv([]string{api.EnvVaultInsecure}, true)
+		c.SSL.Verify = antiboolFromEnv([]string{
+			EnvVaultSkipVerify, api.EnvVaultInsecure}, true)
 	}
 	c.SSL.Finalize()
 
@@ -256,9 +236,29 @@ func (c *VaultConfig) Finalize() {
 		}, "")
 	}
 
-	if c.VaultAgentTokenFile != nil {
+	if c.VaultAgentTokenFile == nil {
+		if StringVal(c.Token) == "" {
+			if homePath != "" {
+				c.Token = stringFromFile([]string{
+					homePath + "/.vault-token",
+				}, "")
+			}
+		}
+	} else {
 		c.Token = stringFromFile([]string{*c.VaultAgentTokenFile}, "")
-		c.RenewToken = Bool(false)
+	}
+
+	// must be after c.Token setting, as default depends on that.
+	if c.RenewToken == nil {
+		default_renew := DefaultVaultRenewToken
+		if c.VaultAgentTokenFile != nil {
+			default_renew = false
+		} else if StringVal(c.Token) == "" {
+			default_renew = false
+		}
+		c.RenewToken = boolFromEnv([]string{
+			"VAULT_RENEW_TOKEN",
+		}, default_renew)
 	}
 
 	if c.Transport == nil {
@@ -286,7 +286,6 @@ func (c *VaultConfig) GoString() string {
 	return fmt.Sprintf("&VaultConfig{"+
 		"Address:%s, "+
 		"Enabled:%s, "+
-		"Grace:%s, "+
 		"Namespace:%s,"+
 		"RenewToken:%s, "+
 		"Retry:%#v, "+
@@ -298,7 +297,6 @@ func (c *VaultConfig) GoString() string {
 		"}",
 		StringGoString(c.Address),
 		BoolGoString(c.Enabled),
-		TimeDurationGoString(c.Grace),
 		StringGoString(c.Namespace),
 		BoolGoString(c.RenewToken),
 		c.Retry,

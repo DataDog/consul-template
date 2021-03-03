@@ -2,7 +2,6 @@ package dependency
 
 import (
 	"io/ioutil"
-	"log"
 	"os"
 	"strings"
 	"testing"
@@ -12,38 +11,44 @@ import (
 )
 
 func TestVaultAgentTokenQuery_Fetch(t *testing.T) {
-	t.Parallel()
+	// Don't use t.Parallel() here as the SetToken() calls are global and break
+	// other tests if run in parallel
+
+	// reset token back to original
+	vc := testClients.Vault()
+	token := vc.Token()
+	defer vc.SetToken(token)
 
 	// Set up the Vault token file.
 	tokenFile, err := ioutil.TempFile("", "token1")
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 	defer os.Remove(tokenFile.Name())
-	renderer.AtomicWrite(tokenFile.Name(), false, []byte("token1"), 0644, false)
+	renderer.AtomicWrite(tokenFile.Name(), false, []byte("token"), 0644, false)
 
 	d, err := NewVaultAgentTokenQuery(tokenFile.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	clientSet := NewClientSet()
-	clientSet.CreateVaultClient(&CreateVaultClientInput{})
+	clientSet := testClients
 	_, _, err = d.Fetch(clientSet, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	assert.Equal(t, "token1", clientSet.Vault().Token())
+	assert.Equal(t, "token", clientSet.Vault().Token())
 
 	// Update the contents.
-	renderer.AtomicWrite(tokenFile.Name(), false, []byte("token2"), 0644, false)
+	renderer.AtomicWrite(
+		tokenFile.Name(), false, []byte("another_token"), 0644, false)
 	_, _, err = d.Fetch(clientSet, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	assert.Equal(t, "token2", clientSet.Vault().Token())
+	assert.Equal(t, "another_token", clientSet.Vault().Token())
 }
 
 func TestVaultAgentTokenQuery_Fetch_missingFile(t *testing.T) {

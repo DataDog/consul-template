@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/hashicorp/consul/api"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -140,6 +141,81 @@ func TestNewHealthServiceQuery(t *testing.T) {
 			assert.Equal(t, tc.exp, act)
 		})
 	}
+	// Connect
+	// all tests above also test connect, just need to check enabling it
+	t.Run("connect_query", func(t *testing.T) {
+		act, err := NewHealthConnectQuery("name")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if act != nil {
+			act.stopCh = nil
+		}
+		exp := &HealthServiceQuery{
+			filters: []string{"passing"},
+			name:    "name",
+			connect: true,
+		}
+
+		assert.Equal(t, exp, act)
+	})
+}
+
+func TestHealthConnectServiceQuery_Fetch(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		exp  []*HealthService
+	}{
+		{
+			"connect-service",
+			"foo",
+			[]*HealthService{
+				&HealthService{
+					Name:        "foo-sidecar-proxy",
+					ID:          "foo",
+					Port:        21999,
+					Status:      "passing",
+					Address:     "127.0.0.1",
+					NodeAddress: "127.0.0.1",
+					Tags:        ServiceTags([]string{}),
+					NodeMeta: map[string]string{
+						"consul-network-segment": ""},
+					Weights: api.AgentWeights{
+						Passing: 1,
+						Warning: 1,
+					},
+				},
+			},
+		},
+	}
+	for i, tc := range cases {
+		t.Run(fmt.Sprintf("%d_%s", i, tc.name), func(t *testing.T) {
+			d, err := NewHealthConnectQuery(tc.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				d.Stop()
+			}()
+			res, _, err := d.Fetch(testClients, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var act []*HealthService
+			if act = res.([]*HealthService); len(act) != 1 {
+				t.Fatal("Expected 1 result, got ", len(act))
+			}
+			// blank out fields we don't want to test
+			inst := act[0]
+			inst.Node, inst.NodeID = "", ""
+			inst.Checks = nil
+			inst.NodeTaggedAddresses = nil
+
+			assert.Equal(t, tc.exp, act)
+		})
+	}
 }
 
 func TestHealthServiceQuery_Fetch(t *testing.T) {
@@ -164,12 +240,17 @@ func TestHealthServiceQuery_Fetch(t *testing.T) {
 					NodeMeta: map[string]string{
 						"consul-network-segment": "",
 					},
-					Address: testConsul.Config.Bind,
-					ID:      "consul",
-					Name:    "consul",
-					Tags:    []string{},
-					Status:  "passing",
-					Port:    testConsul.Config.Ports.Server,
+					ServiceMeta: map[string]string{},
+					Address:     testConsul.Config.Bind,
+					ID:          "consul",
+					Name:        "consul",
+					Tags:        []string{},
+					Status:      "passing",
+					Port:        testConsul.Config.Ports.Server,
+					Weights: api.AgentWeights{
+						Passing: 1,
+						Warning: 1,
+					},
 				},
 			},
 		},
@@ -192,12 +273,17 @@ func TestHealthServiceQuery_Fetch(t *testing.T) {
 					NodeMeta: map[string]string{
 						"consul-network-segment": "",
 					},
-					Address: testConsul.Config.Bind,
-					ID:      "consul",
-					Name:    "consul",
-					Tags:    []string{},
-					Status:  "passing",
-					Port:    testConsul.Config.Ports.Server,
+					ServiceMeta: map[string]string{},
+					Address:     testConsul.Config.Bind,
+					ID:          "consul",
+					Name:        "consul",
+					Tags:        []string{},
+					Status:      "passing",
+					Port:        testConsul.Config.Ports.Server,
+					Weights: api.AgentWeights{
+						Passing: 1,
+						Warning: 1,
+					},
 				},
 			},
 		},
@@ -223,6 +309,10 @@ func TestHealthServiceQuery_Fetch(t *testing.T) {
 					Name:    "service-meta",
 					Tags:    []string{"tag1"},
 					Status:  "passing",
+					Weights: api.AgentWeights{
+						Passing: 1,
+						Warning: 1,
+					},
 				},
 			},
 		},
@@ -244,6 +334,10 @@ func TestHealthServiceQuery_Fetch(t *testing.T) {
 				for _, v := range act.([]*HealthService) {
 					v.NodeID = ""
 					v.Checks = nil
+					// delete any version data from ServiceMeta
+					v.ServiceMeta = filterVersionMeta(v.ServiceMeta)
+					v.NodeTaggedAddresses = filterAddresses(
+						v.NodeTaggedAddresses)
 				}
 			}
 

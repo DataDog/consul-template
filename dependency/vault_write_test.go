@@ -64,6 +64,7 @@ func TestNewVaultWriteQuery(t *testing.T) {
 
 			if act != nil {
 				act.stopCh = nil
+				act.sleepCh = nil
 			}
 
 			assert.Equal(t, tc.exp, act)
@@ -71,11 +72,81 @@ func TestNewVaultWriteQuery(t *testing.T) {
 	}
 }
 
+func TestVaultWriteSecretKV_Fetch(t *testing.T) {
+	t.Parallel()
+
+	// previously triggered a nil-pointer-deref panic in wq.Fetch() with KVv1
+	// due to writeSecret() returning nil for vaultSecret
+	// see GH-1252
+	t.Run("write_secret_v1", func(t *testing.T) {
+		clients, vault := testVaultServer(t, "write_secret_v1", "1")
+		secretsPath := vault.secretsPath
+
+		path := secretsPath + "/foo"
+		exp := map[string]interface{}{
+			"bar": "zed",
+		}
+
+		wq, err := NewVaultWriteQuery(path, exp)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, _, err = wq.Fetch(clients, &QueryOptions{})
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		rq, err := NewVaultReadQuery(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		act, err := rq.readSecret(clients, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert.Equal(t, exp, act.Data)
+	})
+
+	// previously triggered vault returning "no data provided" with KVv2 as the
+	// data structure passed in didn't have additional wrapping map with the
+	// "data" key as used in KVv2
+	// see GH-1252
+	t.Run("write_secret_v2", func(t *testing.T) {
+		clients, vault := testVaultServer(t, "write_secret_v2", "2")
+		secretsPath := vault.secretsPath
+
+		path := secretsPath + "/data/foo"
+		exp := map[string]interface{}{
+			"bar": "zed",
+		}
+
+		wq, err := NewVaultWriteQuery(path, exp)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, _, err = wq.Fetch(clients, &QueryOptions{})
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		rq, err := NewVaultReadQuery(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		act, err := rq.readSecret(clients, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert.Equal(t, exp, act.Data["data"])
+	})
+}
+
 func TestVaultWriteQuery_Fetch(t *testing.T) {
 	t.Parallel()
 
-	clients, vault := testVaultServer(t)
-	defer vault.Stop()
+	clients := testClients
 
 	if err := clients.Vault().Sys().Mount("transit", &api.MountInput{
 		Type: "transit",
@@ -163,7 +234,10 @@ func TestVaultWriteQuery_Fetch(t *testing.T) {
 					errCh <- err
 					return
 				}
-				dataCh <- data
+				select {
+				case dataCh <- data:
+				case <-d.stopCh:
+				}
 			}
 		}()
 
@@ -216,6 +290,42 @@ func TestVaultWriteQuery_Fetch(t *testing.T) {
 		case err := <-errCh:
 			t.Fatal(err)
 		case <-dataCh:
+		}
+	})
+
+	t.Run("nonrenewable-sleeper", func(t *testing.T) {
+		d, err := NewVaultWriteQuery("transit/encrypt/test",
+			map[string]interface{}{
+				"plaintext": b64("test"),
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, qm, err := d.Fetch(clients, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		errCh := make(chan error, 1)
+		go func() {
+			_, _, err := d.Fetch(clients,
+				&QueryOptions{WaitIndex: qm.LastIndex})
+			if err != nil {
+				errCh <- err
+			}
+			close(errCh)
+		}()
+
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+		if len(d.sleepCh) != 1 {
+			t.Fatalf("sleep channel has len %v, expected 1", len(d.sleepCh))
+		}
+		dur := <-d.sleepCh
+		if dur > 0 {
+			t.Fatalf("duration of sleep should be > 0")
 		}
 	})
 }

@@ -75,6 +75,21 @@ type TemplateConfig struct {
 	// delimiter is utilized when parsing the template.
 	LeftDelim  *string `mapstructure:"left_delimiter"`
 	RightDelim *string `mapstructure:"right_delimiter"`
+
+	// FunctionDenylist is a list of functions that this template is not
+	// permitted to run.
+	FunctionDenylist []string `mapstructure:"function_denylist"`
+
+	// FunctionDenylistDeprecated is the backward compatible option for
+	// FunctionDenylist for configuration supported by v0.25.0 and older. This
+	// should not be used directly, use FunctionDenylist instead. Values from
+	// this are combined to FunctionDenylist in Finalize().
+	FunctionDenylistDeprecated []string `mapstructure:"function_blacklist" json:"-"`
+
+	// SandboxPath adds a prefix to any path provided to the `file` function
+	// and causes an error if a relative path tries to traverse outside that
+	// prefix.
+	SandboxPath *string `mapstructure:"sandbox_path"`
 }
 
 // DefaultTemplateConfig returns a configuration that is populated with the
@@ -122,6 +137,16 @@ func (c *TemplateConfig) Copy() *TemplateConfig {
 
 	o.LeftDelim = c.LeftDelim
 	o.RightDelim = c.RightDelim
+
+	for _, fun := range c.FunctionDenylist {
+		o.FunctionDenylist = append(o.FunctionDenylist, fun)
+	}
+
+	for _, fun := range c.FunctionDenylistDeprecated {
+		o.FunctionDenylistDeprecated = append(o.FunctionDenylistDeprecated, fun)
+	}
+
+	o.SandboxPath = c.SandboxPath
 
 	return &o
 }
@@ -196,6 +221,18 @@ func (c *TemplateConfig) Merge(o *TemplateConfig) *TemplateConfig {
 		r.RightDelim = o.RightDelim
 	}
 
+	for _, fun := range o.FunctionDenylist {
+		r.FunctionDenylist = append(r.FunctionDenylist, fun)
+	}
+
+	for _, fun := range o.FunctionDenylistDeprecated {
+		r.FunctionDenylistDeprecated = append(r.FunctionDenylistDeprecated, fun)
+	}
+
+	if o.SandboxPath != nil {
+		r.SandboxPath = o.SandboxPath
+	}
+
 	return r
 }
 
@@ -263,6 +300,17 @@ func (c *TemplateConfig) Finalize() {
 	if c.RightDelim == nil {
 		c.RightDelim = String("")
 	}
+
+	if c.SandboxPath == nil {
+		c.SandboxPath = String("")
+	}
+
+	if c.FunctionDenylist == nil && c.FunctionDenylistDeprecated == nil {
+		c.FunctionDenylist = []string{}
+		c.FunctionDenylistDeprecated = []string{}
+	} else {
+		c.FunctionDenylist = combineLists(c.FunctionDenylist, c.FunctionDenylistDeprecated)
+	}
 }
 
 // GoString defines the printable version of this struct.
@@ -284,7 +332,9 @@ func (c *TemplateConfig) GoString() string {
 		"Source:%s, "+
 		"Wait:%#v, "+
 		"LeftDelim:%s, "+
-		"RightDelim:%s"+
+		"RightDelim:%s, "+
+		"FunctionDenylist:%s, "+
+		"SandboxPath:%s"+
 		"}",
 		BoolGoString(c.Backup),
 		StringGoString(c.Command),
@@ -299,6 +349,8 @@ func (c *TemplateConfig) GoString() string {
 		c.Wait,
 		StringGoString(c.LeftDelim),
 		StringGoString(c.RightDelim),
+		combineLists(c.FunctionDenylist, c.FunctionDenylistDeprecated),
+		StringGoString(c.SandboxPath),
 	)
 }
 

@@ -8,9 +8,39 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/vault/api"
 )
 
+func TestMain(m *testing.M) {
+	// clear out any potential local config for tests
+	os.Unsetenv("VAULT_ADDR")
+	os.Unsetenv("VAULT_TOKEN")
+	os.Unsetenv("VAULT_DEV_ROOT_TOKEN_ID")
+	homePath, _ = ioutil.TempDir("", "")
+
+	os.Exit(m.Run())
+}
+
+func testFile(t *testing.T, contents string) (path string, remove func()) {
+	testFile, err := ioutil.TempFile("", "test.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contents) > 0 {
+		if _, err := testFile.Write([]byte(contents)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return testFile.Name(), func() { os.Remove(testFile.Name()) }
+}
+
 func TestParse(t *testing.T) {
+	t.Parallel()
+
+	testFilePath, remove := testFile(t, "")
+	defer remove()
+
 	cases := []struct {
 		name string
 		i    string
@@ -284,17 +314,43 @@ func TestParse(t *testing.T) {
 		{
 			"deduplicate",
 			`deduplicate {
-				enabled   = true
-				prefix    = "foo/bar"
-				max_stale = "100s"
-				TTL       = "500s"
+				enabled				= true
+				prefix				= "foo/bar"
+				max_stale			= "100s"
+				TTL					= "500s"
+				block_query_wait	= "200s"
 			}`,
 			&Config{
 				Dedup: &DedupConfig{
-					Enabled:  Bool(true),
-					Prefix:   String("foo/bar"),
-					MaxStale: TimeDuration(100 * time.Second),
-					TTL:      TimeDuration(500 * time.Second),
+					Enabled:            Bool(true),
+					Prefix:             String("foo/bar"),
+					MaxStale:           TimeDuration(100 * time.Second),
+					TTL:                TimeDuration(500 * time.Second),
+					BlockQueryWaitTime: TimeDuration(200 * time.Second),
+				},
+			},
+			false,
+		},
+		{
+			"default_left_delimiter",
+			`default_delimiters {
+				left = "<"
+			}`,
+			&Config{
+				DefaultDelims: &DefaultDelims{
+					Left: String("<"),
+				},
+			},
+			false,
+		},
+		{
+			"default_right_delimiter",
+			`default_delimiters {
+				right = ">"
+			}`,
+			&Config{
+				DefaultDelims: &DefaultDelims{
+					Right: String(">"),
 				},
 			},
 			false,
@@ -344,16 +400,16 @@ func TestParse(t *testing.T) {
 			false,
 		},
 		{
-			"exec_env_blacklist",
+			"exec_env_denylist",
 			`exec {
 				env {
-					blacklist = ["a", "b"]
+					denylist = ["a", "b"]
 				}
 			 }`,
 			&Config{
 				Exec: &ExecConfig{
 					Env: &EnvConfig{
-						Blacklist: []string{"a", "b"},
+						Denylist: []string{"a", "b"},
 					},
 				},
 			},
@@ -392,16 +448,16 @@ func TestParse(t *testing.T) {
 			false,
 		},
 		{
-			"exec_env_whitelist",
+			"exec_env_allowlist",
 			`exec {
 				env {
-					whitelist = ["a", "b"]
+					allowlist = ["a", "b"]
 				}
 			 }`,
 			&Config{
 				Exec: &ExecConfig{
 					Env: &EnvConfig{
-						Whitelist: []string{"a", "b"},
+						Allowlist: []string{"a", "b"},
 					},
 				},
 			},
@@ -492,6 +548,14 @@ func TestParse(t *testing.T) {
 			false,
 		},
 		{
+			"block_query_wait",
+			`block_query_wait = "61s"`,
+			&Config{
+				BlockQueryWaitTime: TimeDuration(61 * time.Second),
+			},
+			false,
+		},
+		{
 			"pid_file",
 			`pid_file = "/var/pid"`,
 			&Config{
@@ -535,6 +599,18 @@ func TestParse(t *testing.T) {
 			&Config{
 				Syslog: &SyslogConfig{
 					Facility: String("facility"),
+				},
+			},
+			false,
+		},
+		{
+			"syslog_name",
+			`syslog {
+				name = "name"
+			}`,
+			&Config{
+				Syslog: &SyslogConfig{
+					Name: String("name"),
 				},
 			},
 			false,
@@ -714,7 +790,29 @@ func TestParse(t *testing.T) {
 			false,
 		},
 		{
-			"template_exec_env_blacklist",
+			"template_exec_env_denylist",
+			`template {
+				exec {
+					env {
+						denylist = ["a", "b"]
+					}
+				}
+			 }`,
+			&Config{
+				Templates: &TemplateConfigs{
+					&TemplateConfig{
+						Exec: &ExecConfig{
+							Env: &EnvConfig{
+								Denylist: []string{"a", "b"},
+							},
+						},
+					},
+				},
+			},
+			false,
+		},
+		{
+			"template_exec_env_denylist_deprecated",
 			`template {
 				exec {
 					env {
@@ -727,7 +825,7 @@ func TestParse(t *testing.T) {
 					&TemplateConfig{
 						Exec: &ExecConfig{
 							Env: &EnvConfig{
-								Blacklist: []string{"a", "b"},
+								DenylistDeprecated: []string{"a", "b"},
 							},
 						},
 					},
@@ -780,7 +878,29 @@ func TestParse(t *testing.T) {
 			false,
 		},
 		{
-			"template_exec_env_whitelist",
+			"template_exec_env_allowlist",
+			`template {
+				exec {
+					env {
+						allowlist = ["a", "b"]
+					}
+				}
+			 }`,
+			&Config{
+				Templates: &TemplateConfigs{
+					&TemplateConfig{
+						Exec: &ExecConfig{
+							Env: &EnvConfig{
+								Allowlist: []string{"a", "b"},
+							},
+						},
+					},
+				},
+			},
+			false,
+		},
+		{
+			"template_exec_env_allowlist_deprecated",
 			`template {
 				exec {
 					env {
@@ -793,7 +913,7 @@ func TestParse(t *testing.T) {
 					&TemplateConfig{
 						Exec: &ExecConfig{
 							Env: &EnvConfig{
-								Whitelist: []string{"a", "b"},
+								AllowlistDeprecated: []string{"a", "b"},
 							},
 						},
 					},
@@ -1018,18 +1138,6 @@ func TestParse(t *testing.T) {
 			false,
 		},
 		{
-			"vault_grace",
-			`vault {
-				grace = "5m"
-			}`,
-			&Config{
-				Vault: &VaultConfig{
-					Grace: TimeDuration(5 * time.Minute),
-				},
-			},
-			false,
-		},
-		{
 			"vault_token",
 			`vault {
 				token = "token"
@@ -1037,6 +1145,18 @@ func TestParse(t *testing.T) {
 			&Config{
 				Vault: &VaultConfig{
 					Token: String("token"),
+				},
+			},
+			false,
+		},
+		{
+			"vault_agent_token_file",
+			`vault {
+				vault_agent_token_file = "` + testFilePath + `"
+			}`,
+			&Config{
+				Vault: &VaultConfig{
+					VaultAgentTokenFile: String(testFilePath),
 				},
 			},
 			false,
@@ -1432,13 +1552,120 @@ func TestParse(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(tc.e, c) {
-				t.Errorf("\nexp: %#v\nact: %#v", tc.e, c)
+				t.Errorf("Config diff: %s", tc.e.Diff(c))
+			}
+		})
+	}
+}
+
+func TestFinalize(t *testing.T) {
+	t.Parallel()
+
+	testFileContents := "testing123"
+	testFilePath, remove := testFile(t, testFileContents)
+	defer remove()
+
+	type finalizer interface {
+		Finalize()
+	}
+
+	// Testing Once disabling Wait
+	cases := []struct {
+		name    string
+		isEqual func(*Config, *Config) (bool, error)
+		test    *Config
+		expt    *Config
+	}{
+		{
+			"null-case",
+			nil,
+			&Config{
+				Wait: &WaitConfig{
+					Enabled: Bool(true),
+					Min:     TimeDuration(10 * time.Second),
+					Max:     TimeDuration(20 * time.Second),
+				},
+			},
+			&Config{
+				Wait: &WaitConfig{
+					Enabled: Bool(true),
+					Min:     TimeDuration(10 * time.Second),
+					Max:     TimeDuration(20 * time.Second),
+				},
+			},
+		},
+		{
+			"vault_agent_token_file",
+			func(act, exp *Config) (bool, error) {
+				actToken := *act.Vault.Token
+				expToken := *exp.Vault.Token
+				if actToken != expToken {
+					return false, fmt.Errorf("tokens don't match: %v != %v",
+						actToken, expToken)
+				}
+				actTokenFile := *act.Vault.VaultAgentTokenFile
+				expTokenFile := *exp.Vault.VaultAgentTokenFile
+				if actTokenFile != expTokenFile {
+					return false, fmt.Errorf("tokenfiles don't match: %v != %v",
+						actTokenFile, expTokenFile)
+				}
+				return true, nil
+			},
+			&Config{
+				Vault: &VaultConfig{
+					VaultAgentTokenFile: String(testFilePath),
+				},
+			},
+			&Config{
+				Vault: &VaultConfig{
+					Address:             String(""),
+					Namespace:           String(""),
+					VaultAgentTokenFile: String(testFilePath),
+					Token:               String(testFileContents),
+				},
+			},
+		},
+		{
+			"once-disables-wait",
+			nil,
+			&Config{
+				Wait: &WaitConfig{
+					Enabled: Bool(true),
+					Min:     TimeDuration(10 * time.Second),
+					Max:     TimeDuration(20 * time.Second),
+				},
+				Once: true,
+			},
+			&Config{
+				Wait: &WaitConfig{
+					Enabled: Bool(false),
+					Min:     nil,
+					Max:     nil,
+				},
+			},
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(fmt.Sprintf("%d_%s", i, tc.name), func(t *testing.T) {
+			tc.test.Finalize()
+			switch tc.isEqual {
+			case nil:
+				if !reflect.DeepEqual(tc.expt.Wait, tc.test.Wait) {
+					t.Errorf("\nexp: %#v\nact: %#v", *tc.expt.Wait, *tc.test.Wait)
+				}
+			default:
+				if eq, err := tc.isEqual(tc.test, tc.expt); !eq {
+					t.Errorf(err.Error())
+				}
 			}
 		})
 	}
 }
 
 func TestConfig_Merge(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		a    *Config
@@ -1560,6 +1787,30 @@ func TestConfig_Merge(t *testing.T) {
 			},
 		},
 		{
+			"block_query_wait",
+			&Config{
+				BlockQueryWaitTime: TimeDuration(1 * time.Second),
+			},
+			&Config{
+				BlockQueryWaitTime: TimeDuration(61 * time.Second),
+			},
+			&Config{
+				BlockQueryWaitTime: TimeDuration(61 * time.Second),
+			},
+		},
+		{
+			"block_query_wait_nil",
+			&Config{
+				BlockQueryWaitTime: TimeDuration(1 * time.Second),
+			},
+			&Config{
+				BlockQueryWaitTime: nil,
+			},
+			&Config{
+				BlockQueryWaitTime: TimeDuration(1 * time.Second),
+			},
+		},
+		{
 			"pid_file",
 			&Config{
 				PidFile: String("pid_file"),
@@ -1673,13 +1924,15 @@ func TestConfig_Merge(t *testing.T) {
 		t.Run(fmt.Sprintf("%d_%s", i, tc.name), func(t *testing.T) {
 			r := tc.a.Merge(tc.b)
 			if !reflect.DeepEqual(tc.r, r) {
-				t.Errorf("\nexp: %#v\nact: %#v", tc.r, r)
+				t.Errorf("Config diff: %s", tc.r.Diff(r))
 			}
 		})
 	}
 }
 
 func TestFromPath(t *testing.T) {
+	t.Parallel()
+
 	f, err := ioutil.TempFile("", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1773,6 +2026,7 @@ func TestFromPath(t *testing.T) {
 }
 
 func TestDefaultConfig(t *testing.T) {
+	// Can't use t.Parallel() as this sets/unsets environment variables
 	cases := []struct {
 		env string
 		val string
@@ -1848,7 +2102,7 @@ func TestDefaultConfig(t *testing.T) {
 			false,
 		},
 		{
-			"VAULT_CA_PATH",
+			api.EnvVaultCAPath,
 			"ca_path",
 			&Config{
 				Vault: &VaultConfig{
@@ -1860,7 +2114,7 @@ func TestDefaultConfig(t *testing.T) {
 			false,
 		},
 		{
-			"VAULT_CA_CERT",
+			api.EnvVaultCACert,
 			"ca_cert",
 			&Config{
 				Vault: &VaultConfig{
@@ -1872,7 +2126,7 @@ func TestDefaultConfig(t *testing.T) {
 			false,
 		},
 		{
-			"VAULT_TLS_SERVER_NAME",
+			api.EnvVaultTLSServerName,
 			"server_name",
 			&Config{
 				Vault: &VaultConfig{
@@ -1887,17 +2141,18 @@ func TestDefaultConfig(t *testing.T) {
 
 	for i, tc := range cases {
 		t.Run(fmt.Sprintf("%d_%s", i, tc.env), func(t *testing.T) {
+			r := DefaultConfig().Merge(tc.e)
+			r.Finalize()
+
 			if err := os.Setenv(tc.env, tc.val); err != nil {
 				t.Fatal(err)
 			}
 			defer os.Unsetenv(tc.env)
-
-			r := DefaultConfig()
-			r.Merge(tc.e)
-
 			c := DefaultConfig()
+			c.Finalize()
+
 			if !reflect.DeepEqual(r, c) {
-				t.Errorf("\nexp: %#v\nact: %#v", r, c)
+				t.Errorf("Config diff: %s", r.Diff(c))
 			}
 		})
 	}

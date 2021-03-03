@@ -7,6 +7,8 @@ import (
 )
 
 func TestSyslogConfig_Copy(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		a    *SyslogConfig
@@ -24,6 +26,7 @@ func TestSyslogConfig_Copy(t *testing.T) {
 			&SyslogConfig{
 				Enabled:  Bool(true),
 				Facility: String("facility"),
+				Name:	  String("name"),
 			},
 		},
 	}
@@ -39,6 +42,8 @@ func TestSyslogConfig_Copy(t *testing.T) {
 }
 
 func TestSyslogConfig_Merge(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		a    *SyslogConfig
@@ -117,6 +122,30 @@ func TestSyslogConfig_Merge(t *testing.T) {
 			&SyslogConfig{Facility: String("facility")},
 			&SyslogConfig{Facility: String("facility")},
 		},
+		{
+			"name_overrides",
+			&SyslogConfig{Name: String("name")},
+			&SyslogConfig{Name: String("")},
+			&SyslogConfig{Name: String("")},
+		},
+		{
+			"name_empty_one",
+			&SyslogConfig{Name: String("name")},
+			&SyslogConfig{},
+			&SyslogConfig{Name: String("name")},
+		},
+		{
+			"name_empty_two",
+			&SyslogConfig{},
+			&SyslogConfig{Name: String("name")},
+			&SyslogConfig{Name: String("name")},
+		},
+		{
+			"name_same",
+			&SyslogConfig{Name: String("name")},
+			&SyslogConfig{Name: String("name")},
+			&SyslogConfig{Name: String("name")},
+		},
 	}
 
 	for i, tc := range cases {
@@ -130,6 +159,8 @@ func TestSyslogConfig_Merge(t *testing.T) {
 }
 
 func TestSyslogConfig_Finalize(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		i    *SyslogConfig
@@ -141,6 +172,7 @@ func TestSyslogConfig_Finalize(t *testing.T) {
 			&SyslogConfig{
 				Enabled:  Bool(false),
 				Facility: String(DefaultSyslogFacility),
+				Name:	  String(DefaultSyslogName),
 			},
 		},
 		{
@@ -151,6 +183,18 @@ func TestSyslogConfig_Finalize(t *testing.T) {
 			&SyslogConfig{
 				Enabled:  Bool(true),
 				Facility: String("facility"),
+				Name:	  String(DefaultSyslogName),
+			},
+		},
+		{
+			"with_name",
+			&SyslogConfig{
+				Name: String("name"),
+			},
+			&SyslogConfig{
+				Enabled:  Bool(true),
+				Facility: String(DefaultSyslogFacility),
+				Name:     String("name"),
 			},
 		},
 	}

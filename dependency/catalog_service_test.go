@@ -116,6 +116,15 @@ func TestNewCatalogServiceQuery(t *testing.T) {
 			},
 			false,
 		},
+		{
+			"tag_name_with_colon",
+			"tag:value.name",
+			&CatalogServiceQuery{
+				name: "name",
+				tag:  "tag:value",
+			},
+			false,
+		},
 	}
 
 	for i, tc := range cases {
@@ -206,7 +215,15 @@ func TestCatalogServiceQuery_Fetch(t *testing.T) {
 			if act != nil {
 				for _, s := range act.([]*CatalogService) {
 					s.ID = ""
+					s.TaggedAddresses = filterAddresses(s.TaggedAddresses)
 				}
+			}
+
+			// delete any version data from ServiceMeta
+			act_list := act.([]*CatalogService)
+			for i := range act_list {
+				act_list[i].ServiceMeta = filterVersionMeta(
+					act_list[i].ServiceMeta)
 			}
 
 			assert.Equal(t, tc.exp, act)

@@ -17,7 +17,8 @@ import (
 func TestRunner_Receive(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRunner(config.DefaultConfig(), true, true)
+	c := config.TestConfig(&config.Config{Once: true})
+	r, err := NewRunner(c, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,18 +238,16 @@ func TestRunner_Run(t *testing.T) {
 					}
 				}
 
-				go func() {
-					d, err := dep.NewKVGetQuery("foo")
-					if err != nil {
-						t.Fatal(err)
-					}
-					d.EnableBlocking()
-					r.Receive(d, "bar")
+				d, err := dep.NewKVGetQuery("foo")
+				if err != nil {
+					t.Fatal(err)
+				}
+				d.EnableBlocking()
+				r.Receive(d, "bar")
 
-					if err := r.Run(); err != nil {
-						t.Fatal(err)
-					}
-				}()
+				if err := r.Run(); err != nil {
+					t.Fatal(err)
+				}
 
 				select {
 				case <-r.RenderEventCh():
@@ -446,10 +445,11 @@ func TestRunner_Run(t *testing.T) {
 
 			var out bytes.Buffer
 
-			c := config.DefaultConfig().Merge(tc.c)
+			c := config.TestConfig(tc.c)
+			c.Once = true
 			c.Finalize()
 
-			r, err := NewRunner(c, true, true)
+			r, err := NewRunner(c, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -500,7 +500,7 @@ func TestRunner_Start(t *testing.T) {
 		})
 		c.Finalize()
 
-		r, err := NewRunner(c, false, false)
+		r, err := NewRunner(c, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -543,7 +543,7 @@ func TestRunner_Start(t *testing.T) {
 		})
 		c.Finalize()
 
-		r, err := NewRunner(c, false, false)
+		r, err := NewRunner(c, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -592,7 +592,7 @@ func TestRunner_Start(t *testing.T) {
 		})
 		c.Finalize()
 
-		r, err := NewRunner(c, false, false)
+		r, err := NewRunner(c, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -642,7 +642,7 @@ func TestRunner_Start(t *testing.T) {
 		})
 		c.Finalize()
 
-		r, err := NewRunner(c, false, false)
+		r, err := NewRunner(c, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -689,7 +689,7 @@ func TestRunner_Start(t *testing.T) {
 		})
 		c.Finalize()
 
-		r, err := NewRunner(c, false, false)
+		r, err := NewRunner(c, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -742,10 +742,11 @@ func TestRunner_Start(t *testing.T) {
 					Destination: config.String(out.Name()),
 				},
 			},
+			Once: true,
 		})
 		c.Finalize()
 
-		r, err := NewRunner(c, false, true)
+		r, err := NewRunner(c, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -773,6 +774,74 @@ func TestRunner_Start(t *testing.T) {
 			}
 			if !found {
 				t.Error("missing child")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout")
+		}
+	})
+
+	// Exec would run before template rendering if Wait was defined.
+	t.Run("exec-wait", func(t *testing.T) {
+		t.Parallel()
+
+		testConsul.SetKVString(t, "exec-wait-foo", "foo")
+
+		firstOut, err := ioutil.TempFile("", "foo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(firstOut.Name())       // remove ioutil created file
+		defer os.Remove(firstOut.Name()) // remove template created file
+
+		c := config.DefaultConfig().Merge(&config.Config{
+			Consul: &config.ConsulConfig{
+				Address: config.String(testConsul.HTTPAddr),
+			},
+			Wait: &config.WaitConfig{
+				Min: config.TimeDuration(5 * time.Millisecond),
+				Max: config.TimeDuration(10 * time.Millisecond),
+			},
+			Exec: &config.ExecConfig{
+				// `cat filename` would fail if template hadn't rendered
+				Command: config.String(`cat ` + firstOut.Name()),
+			},
+			Templates: &config.TemplateConfigs{
+				&config.TemplateConfig{
+					Contents:    config.String(`{{ key "exec-wait-foo" }}`),
+					Destination: config.String(firstOut.Name()),
+				},
+			},
+		})
+		c.Finalize()
+
+		r, err := NewRunner(c, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		go r.Start()
+		defer r.Stop()
+
+		select {
+		case err := <-r.ErrCh:
+			t.Fatal(err)
+		case <-r.renderedCh:
+			found := false
+			for i := 0; i < 5; i++ {
+				if found {
+					break
+				}
+
+				time.Sleep(100 * time.Millisecond)
+
+				r.childLock.RLock()
+				if r.child != nil {
+					found = true
+				}
+				r.childLock.RUnlock()
+			}
+			if !found {
+				t.Error("missing child process, exec was not called")
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("timeout")
@@ -823,7 +892,7 @@ func TestRunner_Start(t *testing.T) {
 		})
 		c.Finalize()
 
-		r, err := NewRunner(c, false, false)
+		r, err := NewRunner(c, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -871,10 +940,11 @@ func TestRunner_Start(t *testing.T) {
 					Contents: config.String(`{{ key "render-in-memory" }}`),
 				},
 			},
+			Once: true,
 		})
 		c.Finalize()
 
-		r, err := NewRunner(c, true, true)
+		r, err := NewRunner(c, true)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -2,14 +2,14 @@ package config
 
 import (
 	"fmt"
-	"io/ioutil"
-	"os"
 	"reflect"
 	"testing"
 	"time"
 )
 
 func TestVaultConfig_Copy(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		a    *VaultConfig
@@ -27,7 +27,6 @@ func TestVaultConfig_Copy(t *testing.T) {
 			&VaultConfig{
 				Address:    String("address"),
 				Enabled:    Bool(true),
-				Grace:      TimeDuration(1 * time.Minute),
 				Namespace:  String("foo"),
 				RenewToken: Bool(true),
 				Retry:      &RetryConfig{Enabled: Bool(true)},
@@ -53,6 +52,8 @@ func TestVaultConfig_Copy(t *testing.T) {
 }
 
 func TestVaultConfig_Merge(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		a    *VaultConfig
@@ -130,30 +131,6 @@ func TestVaultConfig_Merge(t *testing.T) {
 			&VaultConfig{Address: String("address")},
 			&VaultConfig{Address: String("address")},
 			&VaultConfig{Address: String("address")},
-		},
-		{
-			"grace_overrides",
-			&VaultConfig{Grace: TimeDuration(5 * time.Minute)},
-			&VaultConfig{Grace: TimeDuration(10 * time.Minute)},
-			&VaultConfig{Grace: TimeDuration(10 * time.Minute)},
-		},
-		{
-			"grace_empty_one",
-			&VaultConfig{Grace: TimeDuration(5 * time.Minute)},
-			&VaultConfig{},
-			&VaultConfig{Grace: TimeDuration(5 * time.Minute)},
-		},
-		{
-			"grace_empty_two",
-			&VaultConfig{},
-			&VaultConfig{Grace: TimeDuration(5 * time.Minute)},
-			&VaultConfig{Grace: TimeDuration(5 * time.Minute)},
-		},
-		{
-			"grace_same",
-			&VaultConfig{Grace: TimeDuration(5 * time.Minute)},
-			&VaultConfig{Grace: TimeDuration(5 * time.Minute)},
-			&VaultConfig{Grace: TimeDuration(5 * time.Minute)},
 		},
 		{
 			"namespace_overrides",
@@ -336,6 +313,8 @@ func TestVaultConfig_Merge(t *testing.T) {
 }
 
 func TestVaultConfig_Finalize(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		i    *VaultConfig
@@ -347,9 +326,8 @@ func TestVaultConfig_Finalize(t *testing.T) {
 			&VaultConfig{
 				Address:    String(""),
 				Enabled:    Bool(false),
-				Grace:      TimeDuration(DefaultVaultGrace),
 				Namespace:  String(""),
-				RenewToken: Bool(DefaultVaultRenewToken),
+				RenewToken: Bool(false),
 				Retry: &RetryConfig{
 					Backoff:    TimeDuration(DefaultRetryBackoff),
 					MaxBackoff: TimeDuration(DefaultRetryMaxBackoff),
@@ -386,9 +364,8 @@ func TestVaultConfig_Finalize(t *testing.T) {
 			&VaultConfig{
 				Address:    String("address"),
 				Enabled:    Bool(true),
-				Grace:      TimeDuration(DefaultVaultGrace),
 				Namespace:  String(""),
-				RenewToken: Bool(DefaultVaultRenewToken),
+				RenewToken: Bool(false),
 				Retry: &RetryConfig{
 					Backoff:    TimeDuration(DefaultRetryBackoff),
 					MaxBackoff: TimeDuration(DefaultRetryMaxBackoff),
@@ -425,9 +402,8 @@ func TestVaultConfig_Finalize(t *testing.T) {
 			&VaultConfig{
 				Address:    String("address"),
 				Enabled:    Bool(true),
-				Grace:      TimeDuration(DefaultVaultGrace),
 				Namespace:  String(""),
-				RenewToken: Bool(DefaultVaultRenewToken),
+				RenewToken: Bool(false),
 				Retry: &RetryConfig{
 					Backoff:    TimeDuration(DefaultRetryBackoff),
 					MaxBackoff: TimeDuration(DefaultRetryMaxBackoff),
@@ -460,14 +436,78 @@ func TestVaultConfig_Finalize(t *testing.T) {
 
 	for i, tc := range cases {
 		t.Run(fmt.Sprintf("%d_%s", i, tc.name), func(t *testing.T) {
-			os.Unsetenv("VAULT_ADDR")
-			os.Unsetenv("VAULT_TOKEN")
-			os.Unsetenv("VAULT_DEV_ROOT_TOKEN_ID")
-			homePath, _ = ioutil.TempDir("", "")
-
 			tc.i.Finalize()
 			if !reflect.DeepEqual(tc.r, tc.i) {
 				t.Errorf("\nexp: %#v\nact: %#v", tc.r, tc.i)
+			}
+		})
+	}
+}
+
+func TestVaultConfig_TokenRenew(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		act    *VaultConfig
+		exp    *VaultConfig
+		fields []string
+	}{
+		{
+			"base_renew",
+			&VaultConfig{},
+			&VaultConfig{
+				RenewToken: Bool(false),
+			},
+			[]string{"RenewToken"},
+		},
+		{
+			"base_renew_w_token",
+			&VaultConfig{
+				Token: String("a-token"),
+			},
+			&VaultConfig{
+				RenewToken: Bool(true),
+			},
+			[]string{"RenewToken"},
+		},
+		{
+			"token_file_w_no_renew",
+			&VaultConfig{
+				VaultAgentTokenFile: String("foo"),
+			},
+			&VaultConfig{
+				VaultAgentTokenFile: String("foo"),
+				RenewToken:          Bool(false),
+			},
+			[]string{"RenewToken"},
+		},
+		{
+			"token_file_w_renew",
+			&VaultConfig{
+				VaultAgentTokenFile: String("foo"),
+				RenewToken:          Bool(true),
+			},
+			&VaultConfig{
+				VaultAgentTokenFile: String("foo"),
+				RenewToken:          Bool(true),
+			},
+			[]string{"RenewToken"},
+		},
+	}
+	for i, tc := range cases {
+		t.Run(fmt.Sprintf("%d_%s", i, tc.name), func(t *testing.T) {
+
+			tc.act.Finalize()
+			for _, f := range tc.fields {
+				av := reflect.Indirect(reflect.ValueOf(*tc.act).FieldByName(f))
+				ev := reflect.Indirect(reflect.ValueOf(*tc.exp).FieldByName(f))
+				switch av.Kind() {
+				case reflect.Bool:
+					if ev.Bool() != av.Bool() {
+						t.Errorf("\nfield:%s\nexp: %#v\nact: %#v", f, ev, av)
+					}
+				}
 			}
 		})
 	}
